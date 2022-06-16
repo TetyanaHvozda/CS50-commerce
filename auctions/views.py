@@ -13,15 +13,31 @@ from django.contrib.auth.decorators import login_required
 class newListingForm(ModelForm):
     class Meta:
         model = Listing
-        fields = ['title', 'description', 'startingBid']
+        fields = ['title', 'description', 'startingBid', 'category']
 
 class newPictureForm(ModelForm):
     class Meta:
         model = Picture
         fields = ['picture', 'alt_text']
 
+class newCommentForm(ModelForm):
+    class Meta:
+        model = Comment
+        fields = ['comment']
+        widgets = {
+            'comment': forms.TextInput(attrs={
+            'class': 'form-control',
+            'placeholder': 'Leave your comment here',
+            })
+        }
+
+class newBidForm(ModelForm):
+    class Meta:
+        model = Bid
+        fields = ['offer']
+
 def index(request):
-    return render(request, "auctions/index.html")
+    return activeListings(request)
 
 @login_required
 def newListing(request):
@@ -44,7 +60,7 @@ def newListing(request):
                     newPicture.save()
 
             return render(request, "auctions/newListing.html", {
-            "form":newListingForm(),
+            "form": newListingForm(),
             "imageForm": PictureFormSet(queryset=Picture.objects.none()),
             "success": True
             })
@@ -60,6 +76,28 @@ def newListing(request):
             "form": newListingForm(),
             "imageForm": PictureFormSet(queryset=Picture.objects.none())
         })
+
+def activeListings(request):
+    #only id because category is foreign key of Listing model
+    #"category" is a parameter and category_id is value
+    #it can have same URL, but different parameters.
+    category_id = request.GET.get("category", None)
+    if category_id is None:
+        listings = Listing.objects.filter(flActive=True)
+    else:
+        listings = Listing.objects.filter(flActive=True, category=category_id)
+    categories = Category.objects.all()
+    for listing in listings:
+        listing.mainPicture = listing.get_pictures.first()
+        if request.user in listing.watchers.all():
+            listing.is_watched = True
+        else:
+            listing.is_watched = False
+    return render(request, "auctions/index.html", {
+    "listings": listings,
+    "categories": categories,
+    "page_title": "Active Listing"
+    })
 
 
 def login_view(request):
@@ -112,3 +150,99 @@ def register(request):
         return HttpResponseRedirect(reverse("index"))
     else:
         return render(request, "auctions/register.html")
+
+@login_required
+def watchlist(request):
+    listings = request.user.watched_listings.all()
+    categories = Category.objects.all()
+    for listing in listings:
+        listing.mainPicture = listing.get_pictures.first()
+        if request.user in listing.watchers.all():
+            listing.is_watched = True
+        else:
+            listing.is_watched = False
+    return render(request, "auctions/index.html", {
+        "listings": listings,
+        "page_title": "My watchlist",
+        "categories": categories
+    })
+
+@login_required
+def change_watchlist(request, listing_id, reverse_method):
+    listing_object = Listing.objects.get(id=listing_id)
+    if request.user in listing_object.watchers.all():
+        listing_object.watchers.remove(request.user)
+    else:
+        listing_object.watchers.add(request.user)
+
+    if reverse_method == "listing":
+        return listing(request, listing_id)
+    else:
+        return HttpResponseRedirect(reverse(reverse_method))
+
+def listing(request, listing_id):
+    if not request.user.is_authenticated:
+        return HttpResponseRedirect(reverse('login'))
+
+    listing = Listing.objects.get(id=listing_id)
+    if request.user in listing.watchers.all():
+        listing.is_watched = True
+    else:
+        listing.is_watched = False
+
+    return render(request, "auctions/listing.html", {
+        "listing": listing,
+        "listing_pictures": listing.get_pictures.all(),
+        "form": newBidForm(),
+        "comments": listing.get_comments.all(),
+        "comment_form": newCommentForm()
+    })
+
+@login_required
+def take_bid(request, listing_id):
+    listing = Listing.objects.get(id=listing_id)
+    offer = float(request.POST['offer'])
+    if is_valid(offer, listing):
+        listing.currentBid = offer
+        form = newBidForm(request.POST)
+        newBid = form.save(commit=False)
+        newBid.auction = listing
+        newBid.user = request.user
+        newBid.save()
+        listing.save()
+        return HttpResponseRedirect(reverse("listing", args=[listing_id]))
+    else:
+        return render(request, "auctions/listing.html", {
+        "listing": listing,
+        "listing_pictures": listing.get_pictures.all(),
+        "form": newBidForm(),
+        "error_min_value": True
+        })
+
+def is_valid(offer, listing):
+    if offer >=listing.startingBid and(listing.currentBid is None or offer > listing.currentBid):
+        return True
+    else:
+        return False
+
+def close_listing(request, listing_id):
+    listing = Listing.objects.get(id=listing_id)
+    if request.user == listing.creator:
+        listing.flActive = False
+        listing.buyer = Bid.objects.filter(auction=listing).last().user
+        listing.save()
+        return HttpResponseRedirect(reverse("listing", args=[listing_id]))
+    else:
+        listing.watchers.add(request.user)
+    return HttpResponseRedirect(reverse("watchlist"))
+
+@login_required
+def comment(request, listing_id):
+    listing = Listing.objects.get(id=listing_id)
+    form = newCommentForm(request.POST)
+    newComment = form.save(commit=False)
+    newComment.user = request.user
+    newComment.listing = listing
+    newComment.save()
+
+    return HttpResponseRedirect(reverse("listing", args=[listing_id]))
